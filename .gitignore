@@ -1,0 +1,21 @@
+# Build output
+.build/
+.swiftpm/
+dist/
+DerivedData/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon\r
+._*
+
+# Editor and tooling state
+*.xcuserstate
+*.xcscmblueprint
+.vscode/
+.idea/
+
+# Local test output
+*.iconset
