@@ -123,6 +123,48 @@ public struct CleanupRuleRegistry: Sendable {
             nextAction: "Inspect cached repositories and revisions with hf cache ls before selecting individual assets."
         ),
         CleanupRule(
+            id: "yarn.cache", title: "Yarn Classic cache", path: "Library/Caches/Yarn", risk: .regenerableCache,
+            consequences: "Offline installs may lose cached packages.",
+            regeneration: "Yarn can fetch published packages again.",
+            applicationGuidance: "Finish Yarn installs.",
+            nextAction: "Inspect yarn cache dir before cleaning the Classic cache."
+        ),
+        CleanupRule(
+            id: "maven.repository", title: "Maven local repository", path: ".m2/repository", risk: .reviewRecommended,
+            consequences: "The repository can include locally published or private artifacts.",
+            regeneration: "Restore local artifacts from their source or a backup.",
+            applicationGuidance: "Finish Maven builds.",
+            nextAction: "Review individual coordinates before dependency maintenance."
+        ),
+        CleanupRule(
+            id: "ios.backups", title: "iPhone and iPad backups", path: "Library/Application Support/MobileSync/Backup", risk: .highRiskData,
+            consequences: "A backup may contain the only recoverable copy of device data.",
+            regeneration: "Keep an independent verified backup.",
+            applicationGuidance: "Finish any device backup or restore.",
+            nextAction: "Manage individual backups in Finder."
+        ),
+        CleanupRule(
+            id: "simulator.devices", title: "Simulator devices", path: "Library/Developer/CoreSimulator/Devices", risk: .highRiskData,
+            consequences: "Simulators can contain unique app data and test state.",
+            regeneration: "Restoring device state can require a backup.",
+            applicationGuidance: "Shut down active simulators.",
+            nextAction: "Use Xcode Devices and Simulators to review individual devices."
+        ),
+        CleanupRule(
+            id: "bun.cache", title: "Bun install cache", path: ".bun/install/cache", risk: .reviewRecommended,
+            consequences: "Offline installs may require new downloads.",
+            regeneration: "Published dependencies can be downloaded again.",
+            applicationGuidance: "Wait for installs to finish.",
+            nextAction: "Review the install cache with Bun."
+        ),
+        CleanupRule(
+            id: "automation.playwright", title: "Playwright browsers", path: "Library/Caches/ms-playwright", risk: .reviewRecommended,
+            consequences: "Automation jobs may lose required browser revisions.",
+            regeneration: "Reinstall matching revisions with Playwright.",
+            applicationGuidance: "Finish browser tests.",
+            nextAction: "Review the revisions required by installed projects."
+        ),
+        CleanupRule(
             id: "pnpm.store", title: "pnpm package store", path: "Library/pnpm/store", risk: .reviewRecommended,
             consequences: "Removing packages can affect offline installs and require new downloads.",
             regeneration: "Available registry packages can be fetched again.",

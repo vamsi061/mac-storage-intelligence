@@ -77,6 +77,10 @@ enum RecommendationChecks {
 
         let expanded: [(String, String, CleanupRisk)] = [
             ("pnpm.store", "Library/pnpm/store", .reviewRecommended),
+            ("yarn.cache", "Library/Caches/Yarn", .regenerableCache),
+            ("maven.repository", ".m2/repository", .reviewRecommended),
+            ("ios.backups", "Library/Application Support/MobileSync/Backup", .highRiskData),
+            ("simulator.devices", "Library/Developer/CoreSimulator/Devices", .highRiskData),
             ("gradle.caches", ".gradle/caches", .reviewRecommended),
             ("docker.desktop-vms", "Library/Containers/com.docker.docker/Data/vms", .highRiskData),
             ("colima.profiles", ".colima", .highRiskData),

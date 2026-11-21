@@ -6,7 +6,19 @@ struct FolderMap: View {
     let root: DirectoryNode
     @StateObject private var navigation = MapNavigation()
 
-    private var folder: DirectoryNode { navigation.trail.last ?? root }
+    // Store only the path selection. Every render resolves it against the live tree.
+    private var trail: [DirectoryNode] {
+        var nodes: [DirectoryNode] = []
+        var parent = root
+        for url in navigation.trail {
+            guard let child = parent.children.first(where: { $0.url == url }) else { break }
+            nodes.append(child)
+            parent = child
+        }
+        return nodes
+    }
+
+    private var folder: DirectoryNode { trail.last ?? root }
     private var visibleChildren: [DirectoryNode] {
         let children = folder.children.filter {
             navigation.filter.isEmpty || $0.url.displayName.localizedCaseInsensitiveContains(navigation.filter)
@@ -18,13 +30,13 @@ struct FolderMap: View {
         VStack(alignment: .leading, spacing: 8) {
             ScrollView(.horizontal) {
                 HStack {
-                    ForEach(Array(([root] + navigation.trail).enumerated()), id: \.element.id) { index, node in
+                    ForEach(Array(([root] + trail).enumerated()), id: \.element.id) { index, node in
                         if index > 0 { Image(systemName: "chevron.right").accessibilityHidden(true) }
                         Button(node.url.displayName) {
                             navigation.trail = Array(navigation.trail.prefix(index))
                             navigation.filter = ""
                         }
-                        .disabled(index == navigation.trail.count)
+                        .disabled(index == trail.count)
                     }
                 }
             }
@@ -83,13 +95,13 @@ struct FolderMap: View {
     }
 
     private func descend(_ node: DirectoryNode) {
-        navigation.trail.append(node)
+        navigation.trail = trail.map(\.url) + [node.url]
         navigation.filter = ""
     }
 }
 
 @MainActor private final class MapNavigation: ObservableObject {
-    @Published var trail: [DirectoryNode] = []
+    @Published var trail: [URL] = []
     @Published var byName = false
     @Published var filter = ""
 }

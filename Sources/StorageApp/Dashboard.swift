@@ -21,14 +21,10 @@ struct Dashboard: View {
                             .labelsHidden().frame(maxWidth: 235)
                             .accessibilityLabel("Volume for capacity reporting")
                         }
-                        Button(action: model.refreshVolumes) {
-                            Label("Refresh capacity", systemImage: "arrow.clockwise").labelStyle(.iconOnly)
-                        }
-                        .disabled(model.refreshingVolumes)
-                        .help("Refresh mounted volumes and capacity")
                     }
                     if let volume = model.selectedVolume {
-                        VolumeCapacityView(volume: volume)
+                        VolumeCapacityView(volume: volume, samples: model.capacitySamples[volume.id] ?? [])
+                        if let error = model.volumeError { Text(error).foregroundStyle(.secondary) }
                         Button("Scan this volume…") { model.chooseVolumeFolder(volume.id) }
                             .disabled(model.isBusy)
                     } else if model.refreshingVolumes {
@@ -54,8 +50,17 @@ struct Dashboard: View {
                                 .font(.headline).lineLimit(2).truncationMode(.middle).textSelection(.enabled)
                             Spacer()
                         }
-                        Text(result.completedAt.formatted(date: .abbreviated, time: .standard))
+                        Text(result.completedAt.formatted(date: .abbreviated, time: .standard) + " · last full verification")
                             .font(.subheadline).foregroundStyle(.secondary)
+                        if let error = model.monitoringError {
+                            Label(error, systemImage: "exclamationmark.triangle").font(.callout)
+                        }
+                        if model.hasIncrementalChanges {
+                            Label("Folder totals include incremental updates since then. They are estimates until the next full verification.",
+                                  systemImage: "clock.arrow.2.circlepath")
+                                .font(.callout).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                         HStack(alignment: .top, spacing: 20) {
                             Metric(title: "Logical size", value: StorageFormat.size(result.root.logicalBytes))
                             Metric(title: "Allocated estimate", value: StorageFormat.size(result.root.allocatedBytes))
@@ -90,13 +95,18 @@ struct Dashboard: View {
                             .help(first.url.path)
                         }
                         HStack {
-                            Button("Browse folder tree") { model.page = .folders }
-                            Button("View largest files") { model.page = .files }
-                        }
-                        if !model.recommendations.isEmpty {
-                            Button("Review cleanup matches (\(model.recommendations.count.formatted()))") {
-                                model.page = .cleanup
+                            Button("Browse folders") { model.page = .explorer }
+                            Button("View largest files") { model.page = .largeFiles }
+                            if !model.allRecommendations.isEmpty {
+                                Button("Review cleanup (\(model.allRecommendations.count.formatted()))") {
+                                    model.page = .cleanup
+                                }
                             }
+                        }
+                        HStack {
+                            Button("Applications") { model.page = .applications }
+                            Button("AI models") { model.page = .models }
+                            Button("Developer storage") { model.page = .developer }
                         }
                     } else {
                         if let date = model.lastCompletedAt {
@@ -125,6 +135,7 @@ struct Dashboard: View {
 
 private struct VolumeCapacityView: View {
     let volume: StorageVolume
+    var samples: [CapacitySample] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -167,6 +178,9 @@ private struct VolumeCapacityView: View {
                         Text("\(StorageFormat.size(unavailable - used)) is shared or otherwise reserved. This can include usage by other APFS volumes.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
+                    if samples.count > 1 {
+                        CapacityTrend(samples: samples)
+                    }
                 }
             }
             Text("macOS reports these values for the volume. A folder scan measures files within the folder you choose.")
@@ -174,6 +188,34 @@ private struct VolumeCapacityView: View {
         }
         .padding(20)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+private struct CapacityTrend: View {
+    let samples: [CapacitySample]
+
+    var body: some View {
+        let values = samples.map(\.available)
+        let low = values.min() ?? 0
+        let high = values.max() ?? 1
+        let span = max(1, high - low)
+        GeometryReader { geometry in
+            Path { path in
+                for (index, value) in values.enumerated() {
+                    let x = geometry.size.width * CGFloat(index) / CGFloat(max(1, values.count - 1))
+                    let y = geometry.size.height * (1 - CGFloat(Double(value - low) / Double(span)))
+                    if index == 0 { path.move(to: CGPoint(x: x, y: y)) }
+                    else { path.addLine(to: CGPoint(x: x, y: y)) }
+                }
+            }
+            .stroke(Color.accentColor, lineWidth: 1.5)
+        }
+        .frame(height: 34)
+        .overlay(alignment: .trailing) {
+            Text(StorageFormat.size(samples.last?.available))
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        .accessibilityLabel("Available space trend for the last \(samples.count) samples")
     }
 }
 

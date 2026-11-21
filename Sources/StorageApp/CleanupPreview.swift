@@ -19,7 +19,7 @@ struct CleanupPreview: View {
             }
             .padding()
             Divider()
-            if model.recommendations.isEmpty {
+            if model.allRecommendations.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "list.bullet.rectangle").font(.largeTitle).foregroundStyle(.secondary)
                         .accessibilityHidden(true)
@@ -35,11 +35,11 @@ struct CleanupPreview: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
-                        Text("Locations to review (\(model.recommendations.count.formatted()))")
+                        Text("Locations to review (\(model.allRecommendations.count.formatted()))")
                             .font(.title2.bold())
-                        Text("Sizes come from the completed scan. APFS clones and snapshots can keep blocks in use, so recovery can be zero.")
+                        Text("Sizes come from the latest folder measurements. APFS clones and snapshots can keep blocks in use, so recovery can be zero.")
                             .foregroundStyle(.secondary)
-                        ForEach(model.recommendations, id: \.id) { match in
+                        ForEach(model.allRecommendations, id: \.id) { match in
                             Divider()
                             RecommendationRow(model: model, match: match)
                         }

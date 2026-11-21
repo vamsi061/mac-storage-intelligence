@@ -15,7 +15,10 @@ public struct PackageTicket: Sendable {
     fileprivate let wheels: [Wheel]
     fileprivate let home: URL
 
+    fileprivate var developer: DeveloperPackageTicket? = nil
+
     public var summary: String {
+        if let developer { return developer.summary }
         let bytes = wheels.reduce(Int64(0)) { $0 + $1.size }
         let amount = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
         return "Permanently remove \(wheels.count) cached pip wheel(s), \(amount) logical, under \(target.path)/wheels using pip cache remove '*-*'. Future installs may need to download or rebuild them. This bypasses Trash."
@@ -29,12 +32,19 @@ public enum PackageCleanup {
     private static let packages = framework + "/lib/python3.9/site-packages"
 
     public static func supports(_ match: CleanupRecommendation) -> Bool {
-        match.id == "pip.cache" && match.risk == .regenerableCache &&
+        if let tool = DeveloperCacheTool.allCases.first(where: { $0.rule == match.id }) {
+            return match.risk != .protected && match.risk != .highRiskData && tool.installed() != nil
+        }
+        return match.id == "pip.cache" && match.risk == .regenerableCache &&
             FileManager.default.isExecutableFile(atPath: python)
     }
 
     public static func prepare(_ match: CleanupRecommendation) throws -> PackageTicket {
         guard supports(match) else { throw failure("This location requires review in its owning application.") }
+        if let tool = DeveloperCacheTool.allCases.first(where: { $0.rule == match.id }) {
+            let developer = try DeveloperPackageTicket.prepare(tool, cache: match.target)
+            return PackageTicket(target: match.target, wheels: [], home: FileManager.default.homeDirectoryForCurrentUser, developer: developer)
+        }
         return try prepare(target: match.target, home: FileManager.default.homeDirectoryForCurrentUser)
     }
 
@@ -82,6 +92,7 @@ public enum PackageCleanup {
     }
 
     public static func execute(_ ticket: PackageTicket) throws -> String {
+        if let developer = ticket.developer { return try developer.execute() }
         let verified = try prepare(target: ticket.target, home: ticket.home)
         guard verified.wheels == ticket.wheels else { throw failure("The cache changed. Review it again.") }
         for location in [python, packages + "/pip/__init__.py"] {

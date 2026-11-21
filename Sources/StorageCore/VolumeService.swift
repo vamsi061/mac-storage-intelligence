@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-public struct StorageVolume: Identifiable, Sendable {
+public struct StorageVolume: Identifiable, Sendable, Equatable {
     /// Mount URL, including the actual Data mount when queried through a firmlink.
     public let id: URL
     public let name: String
@@ -10,6 +10,8 @@ public struct StorageVolume: Identifiable, Sendable {
     public let usedBytes: Int64?
     public let isReadOnly: Bool
     public let isRemovable: Bool
+    public let filesystem: String
+    public let automaticallyInventoried: Bool
 }
 
 public struct VolumeService: Sendable {
@@ -19,7 +21,7 @@ public struct VolumeService: Sendable {
     public func mountedVolumes() throws -> [StorageVolume] {
         let keys: [URLResourceKey] = [.volumeLocalizedNameKey, .volumeIsRemovableKey, .volumeIsReadOnlyKey]
         guard let mounts = FileManager.default.mountedVolumeURLs(
-            includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]
+            includingResourceValuesForKeys: keys, options: []
         ) else {
             throw VolumeError.unavailableMounts
         }
@@ -57,6 +59,13 @@ public struct VolumeService: Sendable {
         let total = statistics.flatMap { bytes(blocks: $0.f_blocks, size: $0.f_bsize) }
         let available = statistics.flatMap { bytes(blocks: $0.f_bavail, size: $0.f_bsize) }
         let used = statistics.flatMap { _ in volumeUsedBytes(at: mount) }
+        let filesystem = statistics.map { value -> String in
+            var fs = value.f_fstypename
+            return withUnsafeBytes(of: &fs) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
+        } ?? "Unknown"
+        let localDisk = statistics.map { ($0.f_flags & UInt32(MNT_LOCAL)) != 0 } ?? false
+        let systemManaged = mount.path.hasPrefix("/System/Volumes/") && mount.path != "/System/Volumes/Data"
+        let inventory = localDisk && !systemManaged && !["devfs", "autofs", "fdesc", "volfs"].contains(filesystem)
         return StorageVolume(
             id: mount,
             name: metadata?.volumeLocalizedName ?? (mount.path == "/" ? "/" : mount.lastPathComponent),
@@ -64,7 +73,7 @@ public struct VolumeService: Sendable {
             availableBytes: available,
             usedBytes: used,
             isReadOnly: statistics.map { ($0.f_flags & UInt32(MNT_RDONLY)) != 0 } ?? metadata?.volumeIsReadOnly ?? false,
-            isRemovable: metadata?.volumeIsRemovable ?? false
+            isRemovable: metadata?.volumeIsRemovable ?? false, filesystem: filesystem, automaticallyInventoried: inventory
         )
     }
 

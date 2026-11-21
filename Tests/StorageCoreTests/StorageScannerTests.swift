@@ -339,6 +339,9 @@ private enum FixtureRunner {
         try require(result.skippedMounts == 1 && result.issueCount == 0, "Mounted child was not skipped cleanly")
         try require(result.root.fileCount == 1 && result.root.logicalBytes == 5, "Nested volume inflated the parent totals")
         try require(result.largestFiles.map { $0.url.lastPathComponent } == ["local-file"], "Image content escaped the mount boundary")
+        let refreshed = try await StorageScanner().refreshDirectory(at: root, in: result)
+        try require(refreshed.skippedMounts == 1 && refreshed.root.fileCount == 1 && refreshed.root.logicalBytes == 5,
+                    "Incremental refresh crossed or lost the nested APFS mount boundary")
         let imageResult = try await StorageScanner().scan(root: mounted)
         try require(imageResult.largestFiles.contains { $0.url.lastPathComponent == "image-file" && $0.logicalBytes == 22 },
                     "Selecting the mounted volume directly did not discover its fixture file")
@@ -367,6 +370,10 @@ private enum FixtureRunner {
             ("permission errors and issue limits", ScannerChecks.permissionFailures),
             ("caller cancellation", ScannerChecks.cancellation),
             ("files removed during traversal", ScannerChecks.changingDirectory),
+            ("incremental subtree updates", MonitoringChecks.incrementalMerge),
+            ("direct directory refresh", DirectoryRefreshChecks.refresh),
+            ("retained depth for incremental anchors", MonitoringChecks.retainedDepth),
+            ("file system event delivery", MonitoringChecks.fileSystemEvents),
             ("wide-directory benchmark", ScannerChecks.wideDirectory)
         ]
         var failed = 0

@@ -23,7 +23,7 @@ fileprivate struct TrashIdentity: Equatable, Sendable {
     }
 }
 
-private struct TrashFailure: LocalizedError {
+struct TrashFailure: LocalizedError {
     let errorDescription: String?
     init(_ reason: String) { errorDescription = reason }
 }
@@ -56,7 +56,7 @@ public enum TrashExecutor {
     }
 
     /// Resolve every component with O_NOFOLLOW, then pin the containing directory during the move.
-    private static func directory(_ url: URL) throws -> Int32 {
+    static func directory(_ url: URL) throws -> Int32 {
         let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
         var fd = open("/", flags)
         guard fd >= 0 else { throw failure("Open filesystem root") }
@@ -71,7 +71,7 @@ public enum TrashExecutor {
         return fd
     }
 
-    private static func failure(_ action: String, _ code: Int32 = errno) -> TrashFailure {
+    static func failure(_ action: String, _ code: Int32 = errno) -> TrashFailure {
         TrashFailure("\(action): \(String(cString: strerror(code))).")
     }
 
@@ -132,7 +132,7 @@ public enum TrashExecutor {
         return "Moved \(name) to Trash as \(trashName). \(measurement) Trash retains the file’s storage until emptied."
     }
 
-    private static func available(_ fd: Int32) -> Int64? {
+    static func available(_ fd: Int32) -> Int64? {
         var volume = statfs()
         guard fstatfs(fd, &volume) == 0 else { return nil }
         let result = volume.f_bavail.multipliedReportingOverflow(by: UInt64(volume.f_bsize))

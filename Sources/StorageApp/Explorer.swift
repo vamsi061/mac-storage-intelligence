@@ -7,7 +7,7 @@ struct Explorer: View {
     @Binding var showingCoverage: Bool
     @StateObject private var controls = ExplorerControls()
 
-    private var isFolderView: Bool { model.page == .folders }
+    private var isFolderView: Bool { model.page == .explorer }
     private var selection: URL? { isFolderView ? (controls.showMap ? nil : controls.selectedFolder) : controls.selectedFile }
 
     var body: some View {
@@ -51,6 +51,9 @@ struct Explorer: View {
                 if !isFolderView, let selection, TrashExecutor.isEligibleLocation(selection) {
                     Button("Move to Trash…") { model.reviewTrash(selection) }.disabled(model.isBusy)
                 }
+                if isFolderView, let selection {
+                    Button("Review deletion…") { model.reviewSelection([selection]) }.disabled(model.isBusy)
+                }
                 Button("Show in Finder") {
                     if let selection { model.reveal(selection) }
                 }
@@ -85,6 +88,10 @@ struct Explorer: View {
                 Image(systemName: "folder").foregroundStyle(.tint)
             }
             Spacer()
+            if node.unreadableEntryCount > 0 {
+                Label("Partial", systemImage: "exclamationmark.triangle").font(.caption)
+                    .help("Some entries in this folder could not be measured. See Coverage for paths and errors.")
+            }
             Text("\(node.fileCount.formatted()) files").font(.caption).foregroundStyle(.secondary)
             Text(StorageFormat.size(node.logicalBytes))
                 .monospacedDigit().frame(minWidth: 85, alignment: .trailing)
@@ -95,6 +102,7 @@ struct Explorer: View {
         .contextMenu {
             Button("Show in Finder") { model.reveal(node.url) }
             Button("Open Containing Folder") { model.openContainingFolder(of: node.url) }
+            Button("Review deletion…") { model.reviewSelection([node.url]) }
         }
     }
 
@@ -185,6 +193,7 @@ private final class ExplorerControls: ObservableObject {
 
 struct CoverageView: View {
     let result: ScanResult
+    var incremental = false
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -199,6 +208,8 @@ struct CoverageView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     Text(verbatim: result.root.url.path).font(.headline).textSelection(.enabled)
+                    Text(incremental ? "Incremental estimates since the last verification." : "Full traversal completed " + result.completedAt.formatted() + ".")
+                        .foregroundStyle(.secondary)
                     Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 7) {
                         count("Files measured", result.root.fileCount)
                         count("Scan issues", result.issueCount)
