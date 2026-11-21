@@ -16,6 +16,7 @@ private final class BrowserState: ObservableObject {
     @Published var eventRevision = 0
     @Published var folderMode = "Browse"
     @Published var directoryRanking = false
+    @Published var measuring = false
 
     func binding<T>(_ keyPath: ReferenceWritableKeyPath<BrowserState, T>) -> Binding<T> {
         Binding(get: { self[keyPath: keyPath] }, set: { self[keyPath: keyPath] = $0 })
@@ -85,6 +86,13 @@ struct FileBrowser: View {
                     Toggle("Hidden", isOn: state.binding(\.includeHidden))
                 }.padding(.horizontal)
                 if !state.message.isEmpty { Text(state.message).font(.callout).foregroundStyle(.secondary).padding(.horizontal) }
+                if state.measuring {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Measuring folder sizes on disk…")
+                        Spacer()
+                    }.font(.callout).foregroundStyle(.secondary).padding(.horizontal)
+                }
                 List(visible, selection: state.binding(\.selection)) { item in
                     HStack {
                         Image(systemName: item.link ? "link" : item.directory ? (mode == .applications ? "app" : "folder") : "doc")
@@ -95,7 +103,9 @@ struct FileBrowser: View {
                         }.lineLimit(1)
                         Spacer()
                         Text(item.kind).foregroundStyle(.secondary).font(.caption)
-                        Text(item.logical.map { StorageFormat.size($0) } ?? "Unmeasured").monospacedDigit().frame(minWidth: 82, alignment: .trailing)
+                        Text(item.logical.map { StorageFormat.size($0) } ?? (item.directory ? "Size unavailable" : "Unmeasured"))
+                            .monospacedDigit().frame(minWidth: 82, alignment: .trailing)
+                            .help(item.logical == nil && item.directory ? "The folder could not be measured. Review permissions or Coverage." : "")
                     }.tag(item.url).contextMenu {
                         Button("Inspect…") { state.inspected = item }
                         Button("Reveal in Finder") { model.reveal(item.url) }
@@ -171,8 +181,11 @@ struct FileBrowser: View {
         let scans = model.inventoryResults
         let root = location
         let mode = mode
+        let automaticRoot = model.activeFolder
         let folders = state.directoryRanking
-        let worker = Task.detached(priority: .utility) { () throws -> ([InventoryItem], String) in
+        state.measuring = true
+        defer { state.measuring = false }
+        let worker = Task.detached(priority: .utility) { () async throws -> ([InventoryItem], String) in
             var rows: [InventoryItem] = []
             var seen = Set<String>()
             func measured(_ url: URL) -> DirectoryNode? {
@@ -186,13 +199,41 @@ struct FileBrowser: View {
             var note = ""
             switch mode {
             case .browse:
-                let folder = measured(root)
+                var folder = measured(root)
                 let children = Dictionary(uniqueKeysWithValues: (folder?.children ?? []).map {
                     (root.appendingPathComponent($0.url.lastPathComponent, isDirectory: true), $0)
                 })
-                let listing = try DirectoryListing.read(root, measurements: children)
+                var listing = try DirectoryListing.read(root, measurements: children)
+                let missingSizes = listing.items.contains { $0.directory && !$0.link && $0.logical == nil }
+                let coveredByAutomatic = automaticRoot.map {
+                    root.path == $0.path || root.path.hasPrefix($0.path == "/" ? "/" : $0.path + "/")
+                } ?? false
+                if folder == nil, coveredByAutomatic {
+                    // Never launch a second full traversal of the folder the automatic scan is
+                    // already measuring. The completed result updates this view through its token.
+                    rows = []
+                    note = "The automatic scan is measuring this location. Folder sizes will appear when it finishes."
+                } else if folder == nil || missingSizes || (folder?.children.isEmpty == true && listing.items.contains(where: \.directory)) {
+                    // The selected folder is outside a retained scan branch or beyond its display
+                    // limit. Measure its immediate children once so no folder remains permanently
+                    // unmeasured. This does not replace the whole-system inventory scope.
+                    let measuredFolder = try await FullScanQueue.shared.scan(
+                        root,
+                        options: ScanOptions(largestFileLimit: 0, directoryLimit: 1,
+                                             issueLimit: 25, minimumRetainedDepth: 1))
+                    try Task.checkCancellation()
+                    folder = measuredFolder.root
+                    let measuredChildren = Dictionary(uniqueKeysWithValues: measuredFolder.root.children.map {
+                        (root.appendingPathComponent($0.url.lastPathComponent, isDirectory: true), $0)
+                    })
+                    listing = try DirectoryListing.read(root, measurements: measuredChildren)
+                    note = "Folder sizes were measured on demand without replacing the monitored inventory scope."
+                    if measuredFolder.issueCount > 0 {
+                        note += " \(measuredFolder.issueCount) entries could not be read because of permissions or filesystem errors."
+                    }
+                }
                 rows = listing.items
-                if listing.unreadable > 0 { note = "\(listing.unreadable) entries could not be inspected." }
+                if listing.unreadable > 0 { note += (note.isEmpty ? "" : " ") + "\(listing.unreadable) entries could not be inspected." }
             case .large:
                 for scan in scans {
                     try Task.checkCancellation()

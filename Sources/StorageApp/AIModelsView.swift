@@ -81,6 +81,10 @@ struct AIModelsView: View {
                                 Text("\(StorageFormat.size(shared)) in shared layers · \(StorageFormat.size(exclusive)) in exclusive layers")
                             } else { Text("Layer sharing unknown. Some storage may be used by other models.") }
                             Text(verbatim: tag.digest).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                            Label(assessment(for: .ollama(tag)).classification.label, systemImage: "exclamationmark.triangle")
+                                .font(.caption.bold())
+                            Text("Restore: " + assessment(for: .ollama(tag)).restoration)
+                                .font(.caption).foregroundStyle(.secondary)
                         }.padding(.vertical, 4)
                     }
                 }
@@ -98,12 +102,18 @@ struct AIModelsView: View {
                             }
                             Text("\(repo.revisions.count) cached revisions · \(StorageFormat.size(repo.localBytes)) allocated inside repository")
                             Text(verbatim: repo.url.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                            Label(assessment(for: .hub(repo)).classification.label, systemImage: "exclamationmark.triangle")
+                                .font(.caption.bold())
+                            Text("Restore: " + assessment(for: .hub(repo)).restoration)
+                                .font(.caption).foregroundStyle(.secondary)
                         }.padding(.vertical, 4)
                     }
                     if !state.repositories.isEmpty {
                         Text(hub.tool == nil ? "Repository removal requires an installed hf CLI with cache rm support." :
                             "The hf CLI manages shared blobs across cached revisions and repositories.").foregroundStyle(.secondary)
                     }
+                    Text("Deleting a repository removes only the selected cached copies. Shared blobs may remain, so logical size may not be recovered.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Local weights and checkpoints") {
                     if files.isEmpty { Text("No model files found among the largest scanned files or in supported inference directories.").foregroundStyle(.secondary) }
@@ -128,7 +138,9 @@ struct AIModelsView: View {
                 Text("Delete model permanently?").font(.title2.bold())
                 Text(verbatim: target.id).font(.headline).textSelection(.enabled)
                 Text(verbatim: target.location).foregroundStyle(.secondary).textSelection(.enabled)
-                Text("Local inference may stop working until you download the model again. Locally created weights may be irreplaceable. Shared data can remain on disk.")
+                Label(assessment(for: target).classification.label, systemImage: "exclamationmark.triangle").font(.headline)
+                Text(verbatim: assessment(for: target).consequences)
+                Text(verbatim: assessment(for: target).restoration).foregroundStyle(.secondary).textSelection(.enabled)
                 TextField("Type the exact model identifier", text: state.binding(\.typed))
                 HStack {
                     Spacer()
@@ -147,6 +159,17 @@ struct AIModelsView: View {
     private func review(_ target: AIModelSelection) {
         state.typed = ""
         state.selection = target
+    }
+
+    private func assessment(for target: AIModelSelection) -> RecoverabilityAssessment {
+        switch target {
+        case .ollama(let tag):
+            return RecoverabilityPolicy().assessManagedModel(
+                identifier: tag.name, restoration: "Run ollama pull \(tag.name) while its registry still hosts it.")
+        case .hub(let repo):
+            return RecoverabilityPolicy().assessManagedModel(
+                identifier: repo.identifier, restoration: "Re-download the required revision with hf download \(repo.identifier).")
+        }
     }
 
     @MainActor private func refresh() async {

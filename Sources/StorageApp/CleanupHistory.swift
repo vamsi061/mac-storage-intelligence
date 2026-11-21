@@ -14,6 +14,7 @@ struct CleanupRecord: Identifiable, Codable {
 enum CleanupOperation {
     case trash(TrashTicket)
     case package(PackageTicket)
+    case packageBatch([PackageTicket])
 }
 
 struct CleanupConfirmation: Identifiable {

@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-public enum SelectionDeletionMode: String, Sendable, CaseIterable {
+public enum SelectionDeletionMode: String, Sendable, CaseIterable, Hashable {
     case trash = "Move to Trash"
     case permanent = "Delete Permanently"
 }
@@ -75,9 +75,15 @@ public struct SelectionDeletion: Sendable {
             root = mount
         } else { throw TrashFailure("Choose an item in your home folder, an installed application you own, or a local external drive.") }
         let relative = url.path.dropFirst(root.path.count + 1).components(separatedBy: "/").map { $0.lowercased() }
-        guard !(relative.count == 1 && protectedRoots.contains(relative[0])),
-              !relative.contains(where: { managed.contains($0) }),
-              !relative.dropLast().contains(where: { $0.hasSuffix(".app") || protectedName($0) }) else {
+        // A log file explicitly selected under Library/Logs is an ordinary user-owned file.
+        // Every other managed Library location remains protected.
+        let explicitLog = relative.count >= 3 && relative[0] == "library" && relative[1] == "logs" &&
+            url.pathExtension.lowercased() == "log" && StorageFileKind.inferred(from: url.lastPathComponent) == .other &&
+            !url.lastPathComponent.hasPrefix(".")
+        let protectedPath = (relative.count == 1 && protectedRoots.contains(relative[0])) ||
+            relative.contains(where: { managed.contains($0) }) ||
+            relative.dropLast().contains(where: { $0.hasSuffix(".app") || protectedName($0) })
+        guard explicitLog || !protectedPath else {
             throw TrashFailure("This system, application, or managed data location is protected.")
         }
         return root

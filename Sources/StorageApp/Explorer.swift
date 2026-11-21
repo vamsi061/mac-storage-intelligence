@@ -49,7 +49,7 @@ struct Explorer: View {
                 }
                 Spacer()
                 if !isFolderView, let selection, TrashExecutor.isEligibleLocation(selection) {
-                    Button("Move to Trash…") { model.reviewTrash(selection) }.disabled(model.isBusy)
+                    Button("Review deletion…") { model.reviewSelection([selection]) }.disabled(model.isBusy)
                 }
                 if isFolderView, let selection {
                     Button("Review deletion…") { model.reviewSelection([selection]) }.disabled(model.isBusy)

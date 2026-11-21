@@ -249,6 +249,37 @@ private enum MonitoringChecks {
         print(String(format: "missed change repaired in %.2fs; dropped events=%d; reconciliations=%d; queued-during-verification event applied; observed overlaps=%d",
                      repairTime, gate.droppedCount, reconciliations, overlaps))
         try report("whole run", samples + [try Sample()])
+
+        // Isolated launch profile: the old firmlink path is persisted, but the model must
+        // reject it and scan the injected account home instead.
+        let launchSuite = "local.msi.stale-launch." + UUID().uuidString
+        guard let launchDefaults = UserDefaults(suiteName: launchSuite) else { throw Failure("Launch-defaults suite unavailable") }
+        defer { launchDefaults.removePersistentDomain(forName: launchSuite) }
+        launchDefaults.set("/System/Volumes/Data/home", forKey: "storage.lastScannedFolder")
+        let launchModel = StorageModel(defaults: launchDefaults, defaultRoot: root, inventoryWorker: false,
+                                       reconciliationInterval: 3600, reconciliationTick: 3600)
+        launchModel.startAutomatically()
+        try await until("isolated launch profile scan", timeout: 20) {
+            launchModel.result?.root.url.standardizedFileURL == root.standardizedFileURL &&
+            launchModel.activeFolder == nil
+        }
+        try require(launchModel.result?.root.fileCount == 2050, "Stale profile did not measure the account home fixture")
+        try require(launchDefaults.string(forKey: "storage.lastScannedFolder") == root.path,
+                    "Stale launch path was not replaced by the validated home")
+        print("isolated stale-profile launch scanned \(launchModel.result?.root.fileCount ?? 0) files under the injected home")
+
+        // A completed deletion must update the measured result and expose the outcome on the
+        // dashboard model without requiring a manual refresh.
+        let deleted = root.appendingPathComponent("branch-0/sub/deep/0")
+        try FileManager.default.removeItem(at: deleted)
+        launchModel.finishSelection(CleanupRecord(id: UUID(), date: Date(), action: "Delete",
+                                                  path: deleted.path, status: "Completed",
+                                                  detail: "Observed source-volume available-space change: 32 bytes."))
+        try await until("post-deletion dashboard refresh", timeout: 10) {
+            launchModel.result?.root.fileCount == 2049
+        }
+        try require(launchModel.history.first?.status == "Completed", "Deletion outcome was not written to history")
+        print("post-deletion rescan updated measured files to 2049 and exposed the completed outcome")
         withExtendedLifetime(subscriptions) {}
     }
 }

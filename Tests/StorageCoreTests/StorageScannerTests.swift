@@ -396,7 +396,9 @@ private enum FixtureRunner {
             ("confirmed Trash move and rejection cases", TrashChecks.run),
             ("treemap geometry", TreemapChecks.run),
             ("open file activity", ActivityChecks.run),
-            ("cleanup recommendation checks", RecommendationChecks.run)
+            ("cleanup recommendation checks", RecommendationChecks.run),
+            ("recoverability policy checks", RecoverabilityChecks.run),
+            ("scan scope, breakdown and folder measurement checks", StorageAnalysisChecks.run)
         ]
         for (name, check) in otherChecks {
             do {

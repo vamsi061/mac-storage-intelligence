@@ -132,10 +132,14 @@ public struct DockerInventory {
         case .image: route = "/images/" + resource.identifier + "?force=0&noprune=1"
         case .volume: throw DeveloperStorageError("Volumes can contain irreplaceable data.")
         }
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let before = try? VolumeService().volume(containing: home).availableBytes
         _ = try request("DELETE", route)
         guard try !resources().contains(where: { $0.id == resource.id }) else {
             throw DeveloperStorageError("The Docker engine still lists this resource.")
         }
-        return "Verified that the engine no longer lists " + resource.id + ". Shared layers and virtual disk allocation can limit space recovery."
+        let after = try? VolumeService().volume(containing: home).availableBytes
+        let change = before.flatMap { old in after.map { " Observed host volume free-space change: \($0 - old) bytes." } } ?? " Host free-space change could not be measured."
+        return "Verified that the engine no longer lists " + resource.id + "." + change + " Shared layers and virtual disk allocation can limit space recovery."
     }
 }

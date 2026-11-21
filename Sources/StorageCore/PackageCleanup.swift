@@ -19,9 +19,13 @@ public struct PackageTicket: Sendable {
 
     public var summary: String {
         if let developer { return developer.summary }
-        let bytes = wheels.reduce(Int64(0)) { $0 + $1.size }
-        let amount = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        let amount = ByteCountFormatter.string(fromByteCount: estimatedBytes, countStyle: .file)
         return "Permanently remove \(wheels.count) cached pip wheel(s), \(amount) logical, under \(target.path)/wheels using pip cache remove '*-*'. Future installs may need to download or rebuild them. This bypasses Trash."
+    }
+
+    public var estimatedBytes: Int64 {
+        if let developer { return developer.snapshot.bytes }
+        return wheels.reduce(Int64(0)) { $0 + $1.size }
     }
 }
 
@@ -141,6 +145,32 @@ public enum PackageCleanup {
             throw failure("pip cleanup failed or was interrupted. \(errorText) \(report)")
         }
         return report
+    }
+
+    /// Executes independently confirmed official cleanups. Each ticket is revalidated by its
+    /// own tool before deletion; partial success is reported instead of being hidden.
+    public static func executeBatch(_ tickets: [PackageTicket]) throws -> String {
+        guard !tickets.isEmpty else { throw failure("No supported cleanup locations were selected.") }
+        var completed = 0
+        var estimated: Int64 = 0
+        var reports: [String] = []
+        var failures: [String] = []
+        for ticket in tickets {
+            do {
+                let detail = try execute(ticket)
+                completed += 1
+                let (sum, overflow) = estimated.addingReportingOverflow(ticket.estimatedBytes)
+                estimated = overflow ? Int64.max : sum
+                reports.append(ticket.target.path + ": " + detail)
+            } catch {
+                failures.append(ticket.target.path + ": " + error.localizedDescription)
+            }
+        }
+        let size = ByteCountFormatter.string(fromByteCount: estimated, countStyle: .file)
+        let summary = "\(completed) of \(tickets.count) official cache cleanups completed. Estimated selected size: \(size). " + reports.joined(separator: " ") +
+            (failures.isEmpty ? "" : " Failures: " + failures.joined(separator: " "))
+        guard failures.isEmpty, completed == tickets.count else { throw failure(summary) }
+        return summary
     }
 
     private static func failure(_ message: String) -> NSError {

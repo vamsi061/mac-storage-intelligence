@@ -21,6 +21,7 @@ private final class DeveloperState: ObservableObject {
     @Published var loadingDocker = false
     @Published var review: CacheReview?
     @Published var removal: DockerRemoval?
+    @Published var typed = ""
     @Published var message: String?
 
     func binding<T>(_ keyPath: ReferenceWritableKeyPath<DeveloperState, T>) -> Binding<T> {
@@ -62,7 +63,10 @@ struct DeveloperStorageView: View {
                                 Text(StorageFormat.size(match.logicalBytes)).monospacedDigit()
                             }
                             Text(verbatim: match.target.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                            Label(match.risk.label, systemImage: "info.circle").font(.caption)
+                            Label(assessment(match).classification.label, systemImage: "checkmark.seal").font(.caption.bold())
+                            if !assessment(match).isDeletable {
+                                Text(verbatim: assessment(match).evidence).font(.caption).foregroundStyle(.secondary)
+                            }
                             HStack {
                                 if let tool = cacheRules[match.id] {
                                     Button("Review cleanup…") { review(tool, match) }
@@ -94,9 +98,10 @@ struct DeveloperStorageView: View {
                             Text(verbatim: resource.name).font(.headline)
                             Text(resource.kind.rawValue + " · " + resource.detail).font(.caption).foregroundStyle(.secondary)
                             if let bytes = resource.bytes { Text(StorageFormat.size(bytes)).font(.caption) }
+                            Label(assessment(resource).classification.label, systemImage: "info.circle").font(.caption.bold())
                         }
                         Spacer()
-                        if resource.canRemove {
+                        if assessment(resource).isDeletable {
                             Button("Remove…") { remove(resource) }.disabled(state.loadingDocker)
                         } else {
                             Text(resource.kind == .volume ? "Protected volume" : "Review in Docker")
@@ -124,12 +129,27 @@ struct DeveloperStorageView: View {
                 }
             }.padding(24).frame(width: 560)
         }
-        .alert("Remove this Docker resource?", isPresented: Binding(
-            get: { state.removal != nil }, set: { if !$0 { state.removal = nil } })) {
-            Button("Cancel", role: .cancel) { state.removal = nil }
-            Button("Remove", role: .destructive) { executeRemoval() }
-        } message: {
-            Text(state.removal.map { $0.resource.consequence } ?? "")
+        .sheet(isPresented: Binding(
+            get: { state.removal != nil }, set: { if !$0 { state.removal = nil; state.typed = "" } })) {
+            if let removal = state.removal {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Remove this Docker resource?").font(.title2.bold())
+                    Text(verbatim: removal.resource.name).font(.headline)
+                    Label(assessment(removal.resource).classification.label, systemImage: "exclamationmark.triangle")
+                    Text(verbatim: assessment(removal.resource).consequences).textSelection(.enabled)
+                    Text("Restore: " + assessment(removal.resource).restoration)
+                        .font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                    Text("Type DELETE to authorise this permanent removal.").font(.callout.bold())
+                    TextField("DELETE", text: state.binding(\.typed))
+                        .textFieldStyle(.roundedBorder).frame(width: 220)
+                    HStack {
+                        Spacer()
+                        Button("Cancel") { state.removal = nil; state.typed = "" }.keyboardShortcut(.cancelAction)
+                        Button("Remove", role: .destructive) { executeRemoval() }
+                            .disabled(state.typed != (assessment(removal.resource).confirmationPhrase ?? "DELETE"))
+                    }
+                }.padding(24).frame(width: 560)
+            }
         }
     }
 
@@ -166,8 +186,17 @@ struct DeveloperStorageView: View {
         }
     }
 
+    private func assessment(_ match: CleanupRecommendation) -> RecoverabilityAssessment {
+        RecoverabilityPolicy().assess(match)
+    }
+
+    private func assessment(_ resource: DockerResource) -> RecoverabilityAssessment {
+        RecoverabilityPolicy().assessDocker(resource)
+    }
+
     private func remove(_ resource: DockerResource) {
         for endpoint in state.endpoints {
+            state.typed = ""
             state.removal = DockerRemoval(endpoint: endpoint, resource: resource)
             return
         }

@@ -33,6 +33,9 @@ final class StorageModel: ObservableObject {
     @Published private(set) var isCancelling = false
     @Published private(set) var progress: ScanProgress?
     @Published private(set) var result: ScanResult?
+    @Published private(set) var applicationsResult: ScanResult?
+    @Published private(set) var applicationsError: String?
+    @Published private(set) var applicationsLoading = false
     @Published private(set) var recommendations: [CleanupRecommendation] = []
     @Published private(set) var preparingPreview = false
     @Published private(set) var lastCompletedAt: Date?
@@ -62,16 +65,102 @@ final class StorageModel: ObservableObject {
     @Published private(set) var monitorAll: Bool
     private let inventoryWorker: Bool
     private let manageVolumes: Bool
+    private let rootResolver: ScanRootResolver
     private(set) var mountWorkers: [URL: StorageModel] = [:]
     private var subscriptions: [URL: AnyCancellable] = [:]
     var inventoryResults: [ScanResult] {
-        [result].compactMap { $0 } + mountWorkers.values.compactMap(\.result)
+        [result].compactMap { $0 } + [applicationsResult].compactMap { $0 } + mountWorkers.values.compactMap(\.result)
     }
     var allRecommendations: [CleanupRecommendation] {
         var paths = Set<String>()
         return (recommendations + mountWorkers.values.flatMap(\.recommendations)).filter { paths.insert($0.id).inserted }
     }
-    private var scanOptions: ScanOptions { ScanOptions(excludedPaths: Set(excludedFolders)) }
+
+    struct RecoverableCandidate: Identifiable {
+        let match: CleanupRecommendation
+        let assessment: RecoverabilityAssessment
+        var id: String { match.id }
+        var bytes: Int64 { max(0, match.allocatedBytes) }
+    }
+
+    /// Candidates are limited to assessed, currently deletable resources. Paths are disjoint and
+    /// protected/unknown app-managed locations are excluded, so this total cannot include a
+    /// protected subtree twice.
+    var recoverableCandidates: [RecoverableCandidate] {
+        let policy = RecoverabilityPolicy()
+        var targets = Set<String>()
+        return allRecommendations.compactMap { match -> RecoverableCandidate? in
+            let assessment = policy.assess(match)
+            guard assessment.isDeletable, match.allocatedBytes > 0,
+                  targets.insert(match.target.standardizedFileURL.path).inserted else { return nil }
+            return RecoverableCandidate(match: match, assessment: assessment)
+        }
+    }
+
+    var potentialRecoverableBytes: Int64 {
+        recoverableCandidates.reduce(Int64(0)) { total, candidate in
+            let (sum, overflow) = total.addingReportingOverflow(candidate.bytes)
+            return overflow ? Int64.max : sum
+        }
+    }
+
+    var storageBreakdown: StorageBreakdown {
+        let primary = result.map { StorageBreakdown.MeasuredRoot(url: $0.root.url, allocatedBytes: $0.root.allocatedBytes) }
+        let additional = ([applicationsResult].compactMap { $0 } + mountWorkers.values.compactMap(\.result))
+            .filter { $0.root.url.standardizedFileURL != result?.root.url.standardizedFileURL }
+            .map { StorageBreakdown.MeasuredRoot(url: $0.root.url, allocatedBytes: $0.root.allocatedBytes) }
+        return StorageBreakdown(volume: selectedVolume, primaryRoot: primary, additionalRoots: additional,
+                                recoverableBytes: potentialRecoverableBytes,
+                                recoverableItems: recoverableCandidates.count)
+    }
+
+    func measuredNode(at url: URL) -> DirectoryNode? {
+        let target = url.standardizedFileURL.path
+        for scan in inventoryResults {
+            guard let path = InventoryPaths.alias(of: url, under: scan.root.url),
+                  let node = scan.deepestDirectory(containing: path), node.url.path == path else { continue }
+            if node.url.standardizedFileURL.path == target || node.url.path == path { return node }
+        }
+        return nil
+    }
+
+    var applicationBundles: [DirectoryNode] {
+        guard let root = applicationsResult?.root else { return [] }
+        var result: [DirectoryNode] = []
+        var stack = [root]
+        while let node = stack.popLast() {
+            if node.url.pathExtension.lowercased() == "app" { result.append(node) }
+            else { stack.append(contentsOf: node.children) }
+        }
+        return result.sorted { $0.allocatedBytes > $1.allocatedBytes }
+    }
+
+    var aiModelBytes: Int64 {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let paths = [".ollama/models", ".cache/huggingface/hub", ".lmstudio/models",
+                     ".cache/lm-studio/models", "Library/Application Support/Jan/data/models",
+                     "Library/Application Support/nomic.ai/GPT4All"]
+        return paths.reduce(Int64(0)) { total, path in
+            let node = measuredNode(at: home.appendingPathComponent(path, isDirectory: true))
+            let (sum, overflow) = total.addingReportingOverflow(node?.allocatedBytes ?? 0)
+            return overflow ? Int64.max : sum
+        }
+    }
+
+    var homeDownloadsBytes: Int64 {
+        measuredNode(at: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads", isDirectory: true))?.allocatedBytes ?? 0
+    }
+
+    var homeCachesBytes: Int64 {
+        measuredNode(at: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches", isDirectory: true))?.allocatedBytes ?? 0
+    }
+    private var scanOptions: ScanOptions {
+        // Retain the complete accessible directory tree for this scope. The prior 20,000-node
+        // cap stopped before Library/Caches and other cleanup ancestors on real home folders,
+        // which made folders appear unmeasured and suppressed every cleanup recommendation.
+        ScanOptions(largestFileLimit: 200, directoryLimit: 250_000, issueLimit: 200,
+                    excludedPaths: Set(excludedFolders), minimumRetainedDepth: 5)
+    }
     private let historyKey = "storage.cleanupHistory.v1"
     private static let lastScanKey = "storage.lastCompletedScanDate"
     private static let lastFolderKey = "storage.lastScannedFolder"
@@ -80,6 +169,7 @@ final class StorageModel: ObservableObject {
     private var volumeTick = 0
     private var lastLoggedAvailable: Int64?
     private var scanTask: Task<Void, Never>?
+    private var applicationScanTask: Task<Void, Never>?
     private var volumeLoop: Task<Void, Never>?
 
     private var eventMonitor: FileSystemEventMonitor?
@@ -127,6 +217,7 @@ final class StorageModel: ObservableObject {
         monitorAll = defaults.object(forKey: "inventory.allMounts") as? Bool ?? false
         self.defaults = defaults
         self.defaultRoot = defaultRoot
+        self.rootResolver = ScanRootResolver(home: defaultRoot)
         self.reconciliationInterval = reconciliationInterval
         self.reconciliationTick = reconciliationTick
         self.monitorFactory = monitorFactory
@@ -226,24 +317,63 @@ final class StorageModel: ObservableObject {
 
     // MARK: - Initial automatic scan
 
-    /// Start with the last chosen folder, or the user's cache directory on first launch.
+    /// Start with the last valid user folder, or the dynamically resolved account home.
+    /// A stale system/firmlink path from an earlier build is rejected instead of becoming an
+    /// empty scan scope for every later launch.
     func startAutomatically() {
         guard !didStartInitialScan else { return }
         didStartInitialScan = true
         guard activeFolder == nil, scanTask == nil, result == nil else { return }
-        if let stored = defaults.string(forKey: Self.lastFolderKey) {
-            scan(folder: URL(fileURLWithPath: stored, isDirectory: true))
+        let stored = defaults.string(forKey: Self.lastFolderKey)
+        let validation = rootResolver.validateStoredRoot(stored)
+        if let validated = validation.url {
+            Self.log.info("Resuming validated scan root \(validated.path, privacy: .public)")
+            scan(folder: validated)
+            startApplicationsDiscovery()
             return
         }
-        // Library/Caches is readable without privacy prompts and is the most useful first-run
-        // target. Protected locations are only scanned after the user selects them explicitly.
-        let caches = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches", isDirectory: true)
+        if stored != nil {
+            defaults.removeObject(forKey: Self.lastFolderKey)
+            Self.log.error("Rejected saved scan root: \(validation.rejection ?? "unavailable", privacy: .public)")
+        }
+        let home = rootResolver.defaultRoot
+        Self.log.info("Starting automatic scan of account home \(home.path, privacy: .public)")
+        scan(folder: home)
+        startApplicationsDiscovery()
+        if let rejection = validation.rejection {
+            scanMessage = "The saved scan folder was not a valid user location. \(rejection) Started with \(home.path) instead."
+        }
+    }
+
+    /// Measures installed application bundles once at launch without changing the browse scope.
+    /// This is a separate inventory root and is deduplicated in the measured breakdown.
+    private func startApplicationsDiscovery(force: Bool = false) {
+        guard manageVolumes, !inventoryWorker else { return }
+        if !force, applicationScanTask != nil || applicationsResult != nil { return }
+        let root = URL(fileURLWithPath: "/Applications", isDirectory: true)
         var isDirectory: ObjCBool = false
-        if manageVolumes, FileManager.default.fileExists(atPath: caches.path, isDirectory: &isDirectory), isDirectory.boolValue {
-            scan(folder: caches)
-            return
+        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else { return }
+        applicationsLoading = true
+        applicationsError = nil
+        applicationScanTask = Task { [weak self] in
+            defer {
+                self?.applicationsLoading = false
+                self?.applicationScanTask = nil
+            }
+            do {
+                let scanned = try await FullScanQueue.shared.scan(
+                    root, options: ScanOptions(largestFileLimit: 200, directoryLimit: 50_000,
+                                               issueLimit: 40, minimumRetainedDepth: 1))
+                try Task.checkCancellation()
+                self?.applicationsResult = scanned
+                self?.inventoryRevision &+= 1
+                Self.log.info("Applications inventory finished: \(scanned.root.fileCount) files, \(scanned.root.allocatedBytes) allocated, \(scanned.issueCount) issues")
+            } catch is CancellationError {
+                return
+            } catch {
+                self?.applicationsError = "Applications could not be measured. " + error.localizedDescription
+            }
         }
-        scan(folder: defaultRoot)
     }
 
     // MARK: - Folder scanning
@@ -336,12 +466,16 @@ final class StorageModel: ObservableObject {
                 let matches = await Self.recommendations(for: completed)
                 try Task.checkCancellation()
                 recommendations = matches
+                let policy = RecoverabilityPolicy()
+                let eligible = matches.filter { policy.assess($0).isDeletable }
+                let recoverable = eligible.reduce(Int64(0)) { $0 + max(0, $1.allocatedBytes) }
+                Self.log.info("Cleanup candidates: \(matches.count) measured, \(eligible.count) eligible, \(recoverable) allocated estimated")
                 result = completed
                 lastCompletedAt = completed.completedAt
                 lastVerifiedAt = completed.completedAt
                 lastIncrementalAt = nil
                 hasIncrementalChanges = false
-                Self.log.info("Full scan finished: \(completed.root.fileCount) files, issues \(completed.issueCount)")
+                Self.log.info("Full scan finished: \(completed.root.fileCount) files, \(completed.root.logicalBytes) logical, \(completed.root.allocatedBytes) allocated, issues \(completed.issueCount)")
                 if !inventoryWorker { defaults.set(completed.completedAt, forKey: Self.lastScanKey) }
                 if !inventoryWorker && defaults.string(forKey: Self.lastFolderKey) != folder.path {
                     defaults.set(folder.path, forKey: Self.lastFolderKey)
@@ -631,17 +765,14 @@ final class StorageModel: ObservableObject {
         choosingFolder = true
         panel.begin { response in
             self.choosingFolder = false
-            if response == .OK, let url = panel.url { self.reviewTrash(url) }
+            if response == .OK, let url = panel.url { self.reviewSelection([url]) }
         }
     }
 
+    /// Reviewing always routes through the recoverability policy, which decides the allowed
+    /// deletion modes and whether a separate typed high-risk confirmation is required.
     func reviewTrash(_ url: URL) {
-        prepareCleanup(action: "Move to Trash", target: url) {
-            let ticket = try TrashExecutor.prepare(url)
-            return CleanupConfirmation(action: "Move to Trash", target: ticket.url,
-                explanation: "Move this file (\(StorageFormat.size(ticket.logicalBytes))) to Trash? You can restore it in Finder. Space may remain occupied until Trash is emptied.",
-                operation: .trash(ticket))
-        }
+        reviewSelection([url])
     }
 
     func reviewPackage(_ match: CleanupRecommendation) {
@@ -649,6 +780,30 @@ final class StorageModel: ObservableObject {
             let ticket = try PackageCleanup.prepare(match)
             return CleanupConfirmation(action: "Clean Package Cache", target: match.target,
                 explanation: ticket.summary + "\n\n" + match.consequences, operation: .package(ticket))
+        }
+    }
+
+    /// Bulk verified cleanup. Every selected location must still have an installed official
+    /// cleanup mechanism; otherwise it is excluded and the remaining resources are prepared.
+    func reviewPackages(_ matches: [CleanupRecommendation]) {
+        let policy = RecoverabilityPolicy()
+        let eligible = matches.filter { policy.assess($0).isDeletable && PackageCleanup.supports($0) }
+        guard let first = eligible.first else { return }
+        prepareCleanup(action: "Clean Selected Caches", target: first.target) {
+            let tickets = try eligible.map(PackageCleanup.prepare)
+            let total = tickets.reduce(Int64(0)) { $0 + $1.estimatedBytes }
+            let totalText = ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
+            var lines = ["Use the installed, official cleanup mechanisms on \(tickets.count) selected cache location(s), estimated \(totalText) allocated."]
+            lines.append("")
+            lines.append("Resources:")
+            for match in eligible {
+                let assessment = policy.assess(match)
+                lines.append("• \(match.target.path) — \(ByteCountFormatter.string(fromByteCount: match.allocatedBytes, countStyle: .file)) — \(assessment.evidence)")
+            }
+            lines.append("")
+            lines.append("Each tool revalidates its cache. Associated project data is not removed. Future builds may download packages again. Partial failures are reported after all selected cleanups run.")
+            return CleanupConfirmation(action: "Clean \(tickets.count) Caches", target: first.target,
+                                       explanation: lines.joined(separator: "\n"), operation: .packageBatch(tickets))
         }
     }
 
@@ -682,6 +837,7 @@ final class StorageModel: ObservableObject {
                     switch request.operation {
                     case .trash(let ticket): return try TrashExecutor.execute(ticket)
                     case .package(let ticket): return try PackageCleanup.execute(ticket)
+                    case .packageBatch(let tickets): return try PackageCleanup.executeBatch(tickets)
                     }
                 }.value
                 entry.status = "Completed"
@@ -707,6 +863,9 @@ final class StorageModel: ObservableObject {
 
     func finishSelection(_ entry: CleanupRecord) {
         record(entry)
+        if entry.path == "/Applications" || entry.path.hasPrefix("/Applications/") {
+            startApplicationsDiscovery(force: true)
+        }
         // Batch results and resource managers can complete before FSEvents publishes its batch.
         let url = URL(fileURLWithPath: entry.path)
         for owner in [self] + Array(mountWorkers.values) {
